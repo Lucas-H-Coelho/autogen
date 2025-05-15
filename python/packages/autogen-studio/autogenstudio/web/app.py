@@ -16,6 +16,7 @@ from .config import settings
 from .deps import cleanup_managers, init_auth_manager, init_managers, register_auth_dependencies
 from .initialization import AppInitializer
 from .routes import gallery, runs, sessions, settingsroute, teams, validation, ws
+from .routes import crewai_routes # <--- ADICIONADO
 
 # Initialize application
 app_file_path = os.path.dirname(os.path.abspath(__file__))
@@ -133,6 +134,15 @@ api.include_router(
     tags=["gallery"],
     responses={404: {"description": "Not found"}},
 )
+
+# Incluir o router CrewAI <--- ADICIONADO
+api.include_router(
+    crewai_routes.router, 
+    prefix="/crewai", # O prefixo já está no nome do endpoint, mas pode ser /v1/crewai etc.
+    tags=["CrewAI"], # A tag já está definida no router, mas mantemos por consistência
+    responses={404: {"description": "Not found"}}
+)
+
 # Include authentication routes
 api.include_router(
     authroutes.router,
