@@ -3,7 +3,6 @@ import os
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-# import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -16,7 +15,14 @@ from .config import settings
 from .deps import cleanup_managers, init_auth_manager, init_managers, register_auth_dependencies
 from .initialization import AppInitializer
 from .routes import gallery, runs, sessions, settingsroute, teams, validation, ws
-from .routes import crewai_routes # <--- ADICIONADO
+
+# Tentativa de importar crewai_routes e debug
+try:
+    from .routes import crewai_routes
+    print("DEBUG: crewai_routes importado com SUCESSO.")
+except ImportError as e:
+    print(f"DEBUG: FALHA ao importar crewai_routes: {e}")
+    crewai_routes = None # Define como None se a importação falhar
 
 # Initialize application
 app_file_path = os.path.dirname(os.path.abspath(__file__))
@@ -25,31 +31,19 @@ initializer = AppInitializer(settings, app_file_path)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """
-    Lifecycle manager for the FastAPI application.
-    Handles initialization and cleanup of application resources.
-    """
-
+    logger.info("Iniciando lifespan do servidor...")
     try:
-        # Initialize managers (DB, Connection, Team)
         await init_managers(initializer.database_uri, initializer.config_dir, initializer.app_root)
-
         await register_auth_dependencies(app, auth_manager)
-
-        # Any other initialization code
         logger.info(
             f"Application startup complete. Navigate to http://{os.environ.get('AUTOGENSTUDIO_HOST', '127.0.0.1')}:{os.environ.get('AUTOGENSTUDIO_PORT', '8081')}"
         )
-
     except Exception as e:
         logger.error(f"Failed to initialize application: {str(e)}")
         raise
-
-    yield  # Application runs here
-
-    # Shutdown
+    yield
+    logger.info("Iniciando cleanup do servidor...")
     try:
-        logger.info("Cleaning up application resources...")
         await cleanup_managers()
         logger.info("Application shutdown complete")
     except Exception as e:
@@ -57,25 +51,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 
 auth_manager = init_auth_manager(initializer.config_dir)
-# Create FastAPI application
 app = FastAPI(lifespan=lifespan, debug=True)
 
-# CORS middleware configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-        "http://localhost:8001",
-        "http://localhost:8081",
-    ],
+    allow_origins=["http://localhost:8000", "http://127.0.0.1:8000", "http://localhost:8001", "http://localhost:8081"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 app.add_middleware(AuthMiddleware, auth_manager=auth_manager)
 
-# Create API router with version and documentation
 api = FastAPI(
     root_path="/api",
     title="AutoGen Studio API",
@@ -84,123 +70,53 @@ api = FastAPI(
     docs_url="/docs" if settings.API_DOCS else None,
 )
 
-# Include all routers with their prefixes
-api.include_router(
-    sessions.router,
-    prefix="/sessions",
-    tags=["sessions"],
-    responses={404: {"description": "Not found"}},
-)
+# Endpoint de teste simples diretamente no app.py
+@api.get("/test-debug")
+async def test_debug_endpoint():
+    print("DEBUG: Endpoint /api/test-debug ATINGIDO!")
+    return {"message": "Debug endpoint no app.py funciona!"}
 
-api.include_router(
-    runs.router,
-    prefix="/runs",
-    tags=["runs"],
-    responses={404: {"description": "Not found"}},
-)
+print("DEBUG: A registar routers existentes...")
+api.include_router(sessions.router, prefix="/sessions", tags=["sessions"])
+api.include_router(runs.router, prefix="/runs", tags=["runs"])
+api.include_router(teams.router, prefix="/teams", tags=["teams"])
+api.include_router(ws.router, prefix="/ws", tags=["websocket"])
+api.include_router(validation.router, prefix="/validate", tags=["validation"])
+api.include_router(settingsroute.router, prefix="/settings", tags=["settings"])
+api.include_router(gallery.router, prefix="/gallery", tags=["gallery"])
+api.include_router(authroutes.router, prefix="/auth", tags=["auth"])
+print("DEBUG: Routers existentes registados.")
 
-api.include_router(
-    teams.router,
-    prefix="/teams",
-    tags=["teams"],
-    responses={404: {"description": "Not found"}},
-)
-
-
-api.include_router(
-    ws.router,
-    prefix="/ws",
-    tags=["websocket"],
-    responses={404: {"description": "Not found"}},
-)
-
-api.include_router(
-    validation.router,
-    prefix="/validate",
-    tags=["validation"],
-    responses={404: {"description": "Not found"}},
-)
-
-api.include_router(
-    settingsroute.router,
-    prefix="/settings",
-    tags=["settings"],
-    responses={404: {"description": "Not found"}},
-)
-
-api.include_router(
-    gallery.router,
-    prefix="/gallery",
-    tags=["gallery"],
-    responses={404: {"description": "Not found"}},
-)
-
-# Incluir o router CrewAI <--- ADICIONADO
-api.include_router(
-    crewai_routes.router, 
-    prefix="/crewai", # O prefixo já está no nome do endpoint, mas pode ser /v1/crewai etc.
-    tags=["CrewAI"], # A tag já está definida no router, mas mantemos por consistência
-    responses={404: {"description": "Not found"}}
-)
-
-# Include authentication routes
-api.include_router(
-    authroutes.router,
-    prefix="/auth",
-    tags=["auth"],
-    responses={404: {"description": "Not found"}},
-)
-
-# Version endpoint
-
+if crewai_routes and hasattr(crewai_routes, 'router'):
+    print(f"DEBUG: A tentar incluir crewai_routes.router com prefixo /crewai. Objecto Router: {crewai_routes.router}")
+    api.include_router(
+        crewai_routes.router,
+        prefix="/crewai",
+        tags=["CrewAI"],
+        responses={404: {"description": "Not found"}}
+    )
+    print("DEBUG: crewai_routes.router INCLUÍDO.")
+elif crewai_routes:
+    print(f"DEBUG: crewai_routes foi importado, mas não tem um atributo 'router'. Conteúdo: {dir(crewai_routes)}")
+else:
+    print("DEBUG: crewai_routes NÃO foi importado, não se pode incluir o router.")
 
 @api.get("/version")
 async def get_version():
-    """Get API version"""
-    return {
-        "status": True,
-        "message": "Version retrieved successfully",
-        "data": {"version": VERSION},
-    }
-
-
-# Health check endpoint
-
+    return {"status": True, "message": "Version retrieved successfully", "data": {"version": VERSION}}
 
 @api.get("/health")
 async def health_check():
-    """API health check endpoint"""
-    return {
-        "status": True,
-        "message": "Service is healthy",
-    }
+    return {"status": True, "message": "Service is healthy"}
 
-
-# Mount static file directories
 app.mount("/api", api)
-app.mount(
-    "/files",
-    StaticFiles(directory=initializer.static_root, html=True),
-    name="files",
-)
+app.mount("/files", StaticFiles(directory=initializer.static_root, html=True), name="files")
 app.mount("/", StaticFiles(directory=initializer.ui_root, html=True), name="ui")
-
-# Error handlers
-
 
 @app.exception_handler(500)
 async def internal_error_handler(request, exc):
     logger.error(f"Internal error: {str(exc)}")
-    return {
-        "status": False,
-        "message": "Internal server error",
-        "detail": str(exc) if settings.API_DOCS else "Internal server error",
-    }
-
+    return {"status": False, "message": "Internal server error", "detail": str(exc) if settings.API_DOCS else "Internal server error"}
 
 def create_app() -> FastAPI:
-    """
-    Factory function to create and configure the FastAPI application.
-    Useful for testing and different deployment scenarios.
-    """
     return app

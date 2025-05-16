@@ -1,109 +1,99 @@
 import os
 from crewai import Agent, Task, Crew, Process
-
-# --- Configuração do LLM (Exemplo com OpenAI) ---
-# Certifique-se de que a sua chave API está definida como uma variável de ambiente
-# ou configure o LLM diretamente nos agentes.
-# os.environ["OPENAI_API_KEY"] = "SUA_CHAVE_API_AQUI"
-# os.environ["OPENAI_MODEL_NAME"] = "gpt-4" # ou gpt-3.5-turbo ou outro
-
-# Se estiver a usar Ollama ou outro LLM local com LiteLLM, configure aqui:
-# os.environ["OPENAI_API_BASE"] = "http://localhost:11434/v1" # Exemplo para Ollama via LiteLLM
-# os.environ["OPENAI_MODEL_NAME"] = "ollama/mistral" # Exemplo para Ollama/Mistral
+from .custom_gemini_llm import CustomGoogleGeminiLLM, CustomGoogleGeminiError # Importa o wrapper customizado
+import traceback
 
 class CrewAIExecutor:
     def __init__(self, llm_config: dict = None):
-        """
-        Inicializa o executor.
-        llm_config (opcional): Dicionário com configurações de LLM
-                                (ex: api_key, model_name, api_base)
-                                Se não fornecido, espera variáveis de ambiente.
-        """
-        if llm_config:
-            if llm_config.get("api_key"):
-                os.environ["OPENAI_API_KEY"] = llm_config["api_key"]
-            if llm_config.get("model_name"):
-                os.environ["OPENAI_MODEL_NAME"] = llm_config["model_name"]
-            if llm_config.get("api_base"): # Para LLMs locais como Ollama via LiteLLM
-                os.environ["OPENAI_API_BASE"] = llm_config["api_base"]
+        self.google_api_key = None
+        # GEMINI_MODEL_NAME no .env deve ser o nome base, ex: "gemini-1.5-flash"
+        self.model_name = "gemini-1.5-flash" # Default
+        self.llm = None
 
+        if llm_config:
+            self.google_api_key = llm_config.get("api_key")
+            self.model_name = llm_config.get("model_name", self.model_name)
+        else:
+            print("AVISO (CrewAIExecutor): llm_config não fornecido. Tentando carregar do ambiente (para teste local).")
+            self.google_api_key = os.getenv("GOOGLE_API_KEY")
+            self.model_name = os.getenv("GEMINI_MODEL_NAME", self.model_name)
+
+        print(f"DEBUG (CrewAIExecutor): __init__ - Chave API presente: {'Sim' if self.google_api_key else 'Não'}")
+        print(f"DEBUG (CrewAIExecutor): __init__ - Nome do modelo base a usar: '{self.model_name}'")
+
+        if not self.google_api_key:
+            print("ERRO (CrewAIExecutor): GOOGLE_API_KEY não configurada.")
+            return
+        if not self.model_name:
+            print("ERRO (CrewAIExecutor): Nome do modelo (GEMINI_MODEL_NAME) não configurado.")
+            return
+
+        try:
+            self.llm = CustomGoogleGeminiLLM(
+                model_name=self.model_name, 
+                google_api_key=self.google_api_key
+                # Pode adicionar outros parâmetros como temperature aqui se o wrapper os aceitar no __init__
+            )
+            print(f"DEBUG (CrewAIExecutor): CustomGoogleGeminiLLM inicializado com sucesso. Modelo: '{self.model_name}'")
+        except CustomGoogleGeminiError as e_custom:
+            print(f"ERRO (CrewAIExecutor): Falha ao inicializar CustomGoogleGeminiLLM. Erro: {e_custom}")
+            # O traceback já foi impresso dentro do CustomGoogleGeminiLLM
+            self.llm = None
+        except Exception as e:
+            print(f"ERRO INESPERADO (CrewAIExecutor): Falha ao inicializar CustomGoogleGeminiLLM. Modelo: '{self.model_name}'. Erro: {type(e).__name__}: {e}")
+            print(traceback.format_exc())
+            self.llm = None
 
     def run_task(self, task_description: str) -> str:
-        """
-        Define e executa uma Crew simples para uma dada descrição de tarefa.
-        """
+        if not self.llm:
+            return f"Erro: LLM (CustomGoogleGeminiLLM) não inicializado. Verifique a configuração (modelo: {self.model_name}, API Key fornecida: {'Sim' if self.google_api_key else 'Não'}) e os logs do servidor."
+
         try:
-            # Verificar se a chave API ou base da API está configurada se necessário
-            if not os.getenv("OPENAI_API_KEY") and not os.getenv("OPENAI_API_BASE"):
-                return "Erro: Configuração do LLM não encontrada (OPENAI_API_KEY ou OPENAI_API_BASE)."
-
-            planner = Agent(
-                role='Planeador de Conteúdo Estratégico',
-                goal=f'Planear um conteúdo envolvente e factualmente correto sobre {task_description}',
-                backstory='Você é um planeador de conteúdo renomado, conhecido pela sua visão estratégica e atenção aos detalhes. Tem um talento especial para transformar ideias complexas em planos de conteúdo cativantes.',
+            # Agentes e Tarefas simplificados para focar na chamada LLM
+            researcher = Agent(
+                role='Investigador de IA',
+                goal=f'Conduzir uma pesquisa aprofundada sobre {task_description}',
+                backstory='Você é um investigador de IA de renome com um olhar atento para os detalhes e uma capacidade de encontrar informação relevante rapidamente.',
+                llm=self.llm,
                 verbose=True,
-                allow_delegation=False # Pode ser True se tiver mais agentes
+                allow_delegation=False # Simplificando
             )
-
-            writer = Agent(
-                role='Escritor de Conteúdo Profissional',
-                goal=f'Escrever um artigo perspicaz e envolvente sobre {task_description}, com base no plano fornecido.',
-                backstory="""Você é um escritor de conteúdo excecional, famoso pela sua capacidade de criar narrativas cativantes e material bem pesquisado.
-                Consegue transformar até os tópicos mais secos em leituras fascinantes.""",
-                verbose=True,
-                allow_delegation=False
+            task = Task(
+                description=f'Criar um breve resumo sobre {task_description}. O resumo deve ser conciso e informativo.',
+                expected_output='Um resumo de 2-3 parágrafos sobre o tópico.',
+                agent=researcher
             )
-
-            plan_task = Task(
-                description=f'1. Criar um plano de tópicos para um artigo sobre {task_description}. O plano deve cobrir os aspetos chave e garantir um fluxo lógico.
-2. O plano deve ser acionável para um escritor.',
-                expected_output=f'Um plano de conteúdo abrangente para um artigo sobre {task_description}, formatado como uma lista de tópicos ou secções principais.',
-                agent=planner
-            )
-
-            write_task = Task(
-                description=f'Escrever um artigo completo com base no plano de conteúdo fornecido para {task_description}. O artigo deve ser informativo, envolvente e bem estruturado.',
-                expected_output=f'Um artigo bem escrito sobre {task_description}, com pelo menos 3 parágrafos.',
-                agent=writer,
-                context=[plan_task] # Passa o output da tarefa de planeamento para a tarefa de escrita
-            )
-
-            crew = Crew(
-                agents=[planner, writer],
-                tasks=[plan_task, write_task],
-                process=Process.sequential,
-                verbose=2
-            )
-
+            crew = Crew(agents=[researcher], tasks=[task], verbose=True)
+            
+            print(f"DEBUG (CrewAIExecutor): A executar crew.kickoff() com CustomGoogleGeminiLLM...")
             result = crew.kickoff()
             return str(result)
-
         except Exception as e:
-            # logger.error(f"Erro ao executar a tarefa CrewAI: {e}")
-            return f"Erro ao executar a tarefa CrewAI: {str(e)}"
+            print(f"ERRO (CrewAIExecutor) na execução da tarefa com CustomGoogleGeminiLLM: {type(e).__name__}: {e}")
+            print(traceback.format_exc())
+            return f"Erro ao executar tarefa CrewAI: {type(e).__name__}: {str(e)}"
 
 if __name__ == '__main__':
-    # Para testar este módulo isoladamente
-    # Defina as suas variáveis de ambiente para OPENAI_API_KEY e OPENAI_MODEL_NAME
-    # ou configure o llm_config no construtor.
-    
-    # Exemplo de configuração para Ollama (se estiver a correr localmente e LiteLLM estiver configurado):
-    # config_ollama = {
-    # "api_base": "http://localhost:11434/v1",
-    # "model_name": "ollama/mistral" # ou o seu modelo Ollama preferido
-    # }
-    # executor = CrewAIExecutor(llm_config=config_ollama)
-    
-    # Exemplo para OpenAI (requer OPENAI_API_KEY e OPENAI_MODEL_NAME como env vars)
-    if not os.getenv("OPENAI_API_KEY"):
-        print("AVISO: OPENAI_API_KEY não está definida. O teste pode falhar ou usar defaults do LiteLLM se configurado.")
+    # Para teste local do executor com o wrapper customizado
+    print("--- Teste local do CrewAIExecutor com CustomGoogleGeminiLLM ---")
+    from dotenv import load_dotenv
+    if load_dotenv(override=True):
+        print("INFO (Executor Teste Local): .env carregado.")
+    else:
+        print("AVISO (Executor Teste Local): .env não encontrado.")
 
-    executor = CrewAIExecutor()
-    
-    sample_task_desc = "o futuro da computação quântica e o seu impacto na criptografia"
-    print(f"A executar tarefa CrewAI de teste: {sample_task_desc}")
-    output = executor.run_task(sample_task_desc)
-    print("
---- Resultado do Teste CrewAI Executor ---")
-    print(output)
-    print("--- Fim do Teste CrewAI Executor ---")
+    api_key = os.getenv("GOOGLE_API_KEY")
+    # GEMINI_MODEL_NAME no .env deve ser o nome base, ex: "gemini-1.5-flash"
+    model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash") 
+
+    if not api_key or not model_name:
+        print("ERRO (Executor Teste Local): GOOGLE_API_KEY ou GEMINI_MODEL_NAME não definidos.")
+    else:
+        print(f"INFO (Executor Teste Local): API Key: Sim, Modelo: {model_name}")
+        executor = CrewAIExecutor(llm_config={"api_key": api_key, "model_name": model_name})
+        if executor.llm:
+            output = executor.run_task("os desafios éticos da inteligência artificial generativa")
+            print("--- Resultado Teste Local (Custom LLM) ---")
+            print(output)
+        else:
+            print("ERRO (Executor Teste Local): LLM não inicializado no executor.")
